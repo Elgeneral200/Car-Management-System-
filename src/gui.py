@@ -3,6 +3,7 @@ from ttkbootstrap.constants import *
 from tkinter import messagebox, filedialog
 from tkinter import ttk as tkttk
 from PIL import Image, ImageTk
+from tkinter import Label as tkLabel
 import sqlite3
 import json
 import os
@@ -86,16 +87,58 @@ class SplashScreen(ttk.Toplevel):
     def __init__(self, parent, translator):
         super().__init__(parent)
         self.translator = translator
-        self.geometry("400x250+600+300")
-        self.overrideredirect(True)  # No title bar
-        self.config(bg="#2c3e50")
-
-        label = ttk.Label(self, text=self.translator.t("welcome_msg"), font=("Segoe UI", 20), foreground="white", background="#2c3e50")
-        label.pack(expand=True)
-
-        # Auto close splash after 3 seconds
+        self.geometry("500x350+550+250")
+        self.overrideredirect(True)
+        
+        main_frame = ttk.Frame(self, style='primary.TFrame')
+        main_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        
+        try:
+            logo_img = Image.open("logo.png").resize((150, 150))  
+            self.logo = ImageTk.PhotoImage(logo_img)
+            logo_label = ttk.Label(main_frame, image=self.logo)
+            logo_label.pack(pady=(25, 15))  
+        except:
+            pass
+        
+        
+        label = ttk.Label(
+            main_frame, 
+            text="Welcome to our system", 
+            font=("Segoe UI", 24, "bold"), 
+            foreground="#ffffff", 
+            style='primary.Inverse.TLabel'  
+        )
+        label.pack(pady=10)
+        
+        
+        sub_label = ttk.Label(
+            main_frame, 
+            text="Car Sales Management System", 
+            font=("Segoe UI", 12), 
+            foreground="#cccccc", 
+            style='primary.TLabel'
+        )
+        sub_label.pack(pady=5)
+        
+        
+        self.progress = ttk.Progressbar(
+            main_frame, 
+            orient='horizontal', 
+            length=300, 
+            mode='determinate', 
+            bootstyle="success-striped"
+        )
+        self.progress.pack(pady=20)
+        
+        self.update_progress()
         self.after(3000, self.destroy)
-
+    
+    def update_progress(self, value=0):
+        self.progress['value'] = value
+        if value < 100:
+            self.after(30, lambda: self.update_progress(value+2))
 # ==== Main Application ====
 
 class CarSalesApp(ttk.Window):
