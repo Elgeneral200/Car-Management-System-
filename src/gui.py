@@ -19,11 +19,13 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QPushButton,
     QLabel, QFileDialog, QMessageBox, QTableView, QSplitter, QGroupBox, QFormLayout,
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDialog, QDialogButtonBox,
-    QStackedWidget, QMenu, QStyle, QListWidget, QListWidgetItem, QToolButton, QStatusBar
+    QStackedWidget, QMenu, QStyle, QListWidget, QListWidgetItem, QToolButton, QStatusBar,
+    QHeaderView, QGraphicsDropShadowEffect, QAbstractItemView
 )
 from PySide6.QtPrintSupport import QPrinter
 
-# Matplotlib for Qt
+# Matplotlib
+import matplotlib
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 
@@ -37,6 +39,8 @@ try:
     import requests
 except Exception:
     requests = None
+
+from uuid import uuid4
 
 
 # --------- Constants ---------
@@ -62,7 +66,7 @@ FIELD_MAP = {
     10: "liter_capacity",
     11: "salesperson",
 }
-NUMERIC_COLS = {0, 3, 4, 9, 10}  # ID, Year, Price, Engine Power, Liter Capacity
+NUMERIC_COLS = {0, 3, 4, 9, 10}
 INT_FIELDS = {"year", "engine_power", "liter_capacity"}
 FLOAT_FIELDS = {"price"}
 
@@ -125,6 +129,12 @@ class Database:
     def __init__(self, db_file="car_sales.db"):
         self.db_file = db_file
         self.conn = sqlite3.connect(db_file)
+        try:
+            self.conn.execute("PRAGMA foreign_keys = ON;")
+            self.conn.execute("PRAGMA journal_mode = WAL;")
+            self.conn.execute("PRAGMA synchronous = NORMAL;")
+        except Exception:
+            pass
         self.create_tables()
 
     def close(self):
@@ -164,6 +174,14 @@ class Database:
         """
         self.conn.execute(q1)
         self.conn.execute(q2)
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cars_make ON cars(make);")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cars_year ON cars(year);")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cars_price ON cars(price);")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cars_condition ON cars(condition);")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cars_drive ON cars(drive_trains);")
+        except Exception:
+            pass
         self.conn.commit()
 
     def insert_car(self, car_data):
@@ -172,8 +190,9 @@ class Database:
         (make, model, year, price, color, type, condition, drive_trains, engine_power, liter_capacity, salesperson, image_path)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        self.conn.execute(query, car_data)
+        cur = self.conn.execute(query, car_data)
         self.conn.commit()
+        return cur.lastrowid  # مهم: رجّع ID الصف الجديد
 
     def fetch_all_cars(self):
         cursor = self.conn.execute("SELECT * FROM cars")
@@ -221,7 +240,6 @@ class Database:
         self.conn.execute("DELETE FROM cars WHERE id = ?", (car_id,))
         self.conn.commit()
 
-    # Gallery methods
     def add_image(self, car_id, path):
         self.conn.execute("INSERT INTO car_images (car_id, path) VALUES (?, ?)", (car_id, path))
         self.conn.commit()
@@ -279,9 +297,12 @@ class CarTableModel(QAbstractTableModel):
             return str(value)
 
         if role == Qt.TextAlignmentRole:
-            if col in (1, 2, 5, 6, 7, 8, 11):  # texts
+            if col in (1, 2, 5, 6, 7, 8, 11):
                 return Qt.AlignVCenter | Qt.AlignLeft
             return Qt.AlignVCenter | Qt.AlignRight
+
+        if role == Qt.ToolTipRole:
+            return str(value)
 
         if role == Qt.BackgroundRole and self.highlight_query:
             try:
@@ -325,7 +346,6 @@ class CarTableModel(QAbstractTableModel):
             return False
         text = str(value).strip()
 
-        # parse and validate
         try:
             if field in INT_FIELDS:
                 new_val = int(text)
@@ -411,25 +431,24 @@ from PySide6.QtWidgets import QStyledItemDelegate
 class InlineDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         col = index.column()
-        if col == 3:  # year
+        if col == 3:
             w = QSpinBox(parent); w.setRange(1886, 2050); return w
-        if col == 4:  # price
+        if col == 4:
             w = QDoubleSpinBox(parent); w.setRange(0, 1e9); w.setDecimals(2); return w
-        if col == 9:  # engine
+        if col == 9:
             w = QSpinBox(parent); w.setRange(1, 100000); return w
-        if col == 10:  # liter
+        if col == 10:
             w = QSpinBox(parent); w.setRange(1, 10000); return w
-        if col == 6:  # type
+        if col == 6:
             w = QComboBox(parent); w.addItems(ENUM_TYPES); return w
-        if col == 7:  # condition
+        if col == 7:
             w = QComboBox(parent); w.addItems(ENUM_CONDITIONS); return w
-        if col == 8:  # drive
+        if col == 8:
             w = QComboBox(parent); w.addItems(ENUM_DRIVES); return w
         return QLineEdit(parent)
 
     def setEditorData(self, editor, index):
         val = index.model().data(index, Qt.DisplayRole)
-        col = index.column()
         if isinstance(editor, QSpinBox):
             try: editor.setValue(int(str(val).replace(",", "").replace("$", "")))
             except Exception: editor.setValue(0)
@@ -488,7 +507,7 @@ class ImageDropLabel(QLabel):
                         pm = QPixmap()
                         pm.loadFromData(r.content)
                         if not pm.isNull():
-                            temp_path = os.path.join(os.getcwd(), "dropped_image.png")
+                            temp_path = os.path.join(os.getcwd(), f"dropped_{uuid4().hex}.png")
                             pm.save(temp_path, "PNG")
                             if callable(self.on_drop):
                                 self.on_drop(temp_path)
@@ -794,11 +813,14 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self._restore_state()
+        self._apply_app_font()
         self._apply_matplotlib_style()
         self._apply_qss()
+        self._apply_shadows()
         self._update_texts()
         self._set_tooltips()
         self._update_status()
+        self._set_active_nav(self.btn_dashboard)
 
         # Shortcuts
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_car_dialog)
@@ -870,11 +892,11 @@ class MainWindow(QMainWindow):
         sb.addWidget(self.sb_left, 1)
         sb.addPermanentWidget(self.sb_right, 0)
 
-        # Actions
-        self.btn_dashboard.clicked.connect(lambda: self.stack.setCurrentWidget(self.page_dashboard))
-        self.btn_add.clicked.connect(self.add_car_dialog)
-        self.btn_search.clicked.connect(lambda: self.stack.setCurrentWidget(self.page_search))
-        self.btn_analytics.clicked.connect(lambda: (self._apply_matplotlib_style(), self._refresh_analytics(), self.stack.setCurrentWidget(self.page_analytics)))
+        # Actions with active nav
+        self.btn_dashboard.clicked.connect(lambda: (self.stack.setCurrentWidget(self.page_dashboard), self._set_active_nav(self.btn_dashboard)))
+        self.btn_add.clicked.connect(lambda: (self.add_car_dialog(), self._set_active_nav(self.btn_add)))
+        self.btn_search.clicked.connect(lambda: (self.stack.setCurrentWidget(self.page_search), self._set_active_nav(self.btn_search)))
+        self.btn_analytics.clicked.connect(lambda: (self._apply_matplotlib_style(), self._refresh_analytics(), self.stack.setCurrentWidget(self.page_analytics), self._set_active_nav(self.btn_analytics)))
         self.btn_import.clicked.connect(self.import_data)
         self.btn_export.clicked.connect(self.export_to_excel)
         self.btn_columns.clicked.connect(self._open_columns_menu)
@@ -921,6 +943,16 @@ class MainWindow(QMainWindow):
         self.proxy.setSourceModel(self.model)
         self.table.setModel(self.proxy)
         self.table.setItemDelegate(InlineDelegate(self.table))
+
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setTextElideMode(Qt.ElideRight)
+        hdr = self.table.horizontalHeader()
+        hdr.setStretchLastSection(True)
+        hdr.setHighlightSections(False)
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
+        self.table.verticalHeader().setDefaultSectionSize(30)
+
         self.table.horizontalHeader().setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.horizontalHeader().customContextMenuRequested.connect(self._open_header_menu)
 
@@ -928,7 +960,6 @@ class MainWindow(QMainWindow):
 
         self.table.selectionModel().selectionChanged.connect(self._on_table_selection)
         self.table.doubleClicked.connect(self.edit_selected_car)
-        self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.setAlternatingRowColors(True)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._open_table_menu)
@@ -1065,7 +1096,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         hidden_cols = set(map(str, self.settings.value("hiddenColumns", [], type=list)))
         for i, key in enumerate(HEADER_KEYS):
-            if i == 0:  # ID always visible
+            if i == 0:
                 continue
             act = QAction(self.translator.t(key) if key != "ID" else "ID", self, checkable=True)
             act.setChecked(str(i) not in hidden_cols)
@@ -1248,6 +1279,22 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, self.translator.t("error"), str(e))
 
+    # --------- SELECT BY ID (عشان نحدّد الصف الجديد تلقائيًا) ---------
+    def _select_by_id(self, car_id: int):
+        target_row = -1
+        for i, rec in enumerate(getattr(self.model, "_data", [])):
+            if rec and rec[0] == car_id:
+                target_row = i
+                break
+        if target_row == -1:
+            return
+        src_index = self.model.index(target_row, 0)
+        proxy_index = self.proxy.mapFromSource(src_index)
+        if proxy_index.isValid():
+            self.table.clearSelection()
+            self.table.selectRow(proxy_index.row())
+            self.table.scrollTo(proxy_index, QTableView.PositionAtCenter)
+
     def edit_selected_car(self):
         row_src = self._selected_source_row()
         if row_src is None:
@@ -1316,11 +1363,16 @@ class MainWindow(QMainWindow):
                 except Exception as ex:
                     QMessageBox.warning(self, self.translator.t("warning"), f"{self.translator.t('image_save_fail')}: {ex}")
 
-            self.db.insert_car((make, model, year, price, color, car_type, condition, drive, engine, liter, sales, stored_img_path))
+            new_id = self.db.insert_car((make, model, year, price, color, car_type, condition, drive, engine, liter, sales, stored_img_path))
             Toast(self, self.translator.t("car_added"), 1800)
+            # امسح الفلتر وحدّد الصف الجديد
+            self.ed_quick_filter.clear()
+            self.proxy.setQuery("")
             self.model.load_data()
+            self._select_by_id(new_id)
             self._update_status()
 
+    # --------- UPDATED: إضافة عربية وتحديدها بعد الحفظ ---------
     def add_car_dialog(self):
         dlg = CarFormDialog(self.translator, self, car=None)
         if dlg.exec() == QDialog.Accepted:
@@ -1343,30 +1395,49 @@ class MainWindow(QMainWindow):
                 except Exception as ex:
                     QMessageBox.warning(self, self.translator.t("warning"), f"{self.translator.t('image_save_fail')}: {ex}")
 
-            self.db.insert_car((make, model, year, price, color, car_type, condition, drive, engine, liter, sales, stored_img_path))
-            QMessageBox.information(self, self.translator.t("success"), self.translator.t("car_added"))
+            try:
+                new_id = self.db.insert_car((make, model, year, price, color, car_type, condition, drive, engine, liter, sales, stored_img_path))
+            except Exception as ex:
+                QMessageBox.critical(self, self.translator.t("error"), str(ex))
+                return
+
+            # ارجع للدashboard، امسح الفلتر، حمّل البيانات وحدّد الصف الجديد
+            self.stack.setCurrentWidget(self.page_dashboard)
+            self._set_active_nav(self.btn_dashboard)
+            self.ed_quick_filter.clear()
+            self.proxy.setQuery("")
             self.model.load_data()
+            self._select_by_id(new_id)
             self._update_status()
+            Toast(self, self.translator.t("car_added"), 1600)
 
     def delete_selected_car(self):
         if self.current_role != "admin":
             QMessageBox.warning(self, self.translator.t("warning"), self.translator.t("delete_permission_denied"))
             return
-        row_src = self._selected_source_row()
-        if row_src is None:
+        sels = self.table.selectionModel().selectedRows()
+        if not sels:
             QMessageBox.warning(self, self.translator.t("warning"), self.translator.t("select_car_delete"))
             return
         if QMessageBox.question(self, self.translator.t("confirm"), self.translator.t("confirm_delete")) != QMessageBox.Yes:
             return
-        car = self.model.get_row(row_src)
-        car_id = car[0]
-        img_path = car[12]
-        try:
-            if img_path and os.path.exists(img_path):
-                os.remove(img_path)
-        except Exception:
-            pass
-        self.db.delete_car(car_id)
+
+        to_delete = []
+        for idx in sels:
+            src = self.proxy.mapToSource(idx)
+            car = self.model.get_row(src.row())
+            if car:
+                to_delete.append(car)
+
+        for car in to_delete:
+            img_path = car[12]
+            try:
+                if img_path and os.path.exists(img_path):
+                    os.remove(img_path)
+            except Exception:
+                pass
+            self.db.delete_car(car[0])
+
         QMessageBox.information(self, self.translator.t("success"), self.translator.t("car_deleted"))
         self.model.load_data()
         self._on_table_selection()
@@ -1383,7 +1454,6 @@ class MainWindow(QMainWindow):
             self.model.load_data()
             self._on_table_selection()
 
-    # NEW: focus quick filter method to fix the shortcut
     def _focus_quick_filter(self):
         self.stack.setCurrentWidget(self.page_dashboard)
         self.ed_quick_filter.setFocus()
@@ -1428,7 +1498,7 @@ class MainWindow(QMainWindow):
         self.model_search = CarTableModel(self.translator, self.db, cars=[])
         self.table_search.setModel(self.model_search)
         self.table_search.setItemDelegate(InlineDelegate(self.table_search))
-        self.table_search.verticalHeader().setDefaultSectionSize(28)
+        self.table_search.verticalHeader().setDefaultSectionSize(30)
         self.table_search.setAlternatingRowColors(True)
         v.addWidget(self.table_search, 1)
         return page
@@ -1473,6 +1543,9 @@ class MainWindow(QMainWindow):
             plt.style.use("dark_background")
         else:
             plt.style.use("default")
+        if self.lang == "ar":
+            matplotlib.rcParams["font.sans-serif"] = ["Cairo", "Noto Naskh Arabic", "Amiri", "Arial", "Segoe UI"]
+            matplotlib.rcParams["axes.unicode_minus"] = False
 
     def _refresh_analytics(self):
         cars = self.db.fetch_all_cars()
@@ -1603,20 +1676,82 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, self.translator.t("error"), str(e))
 
-    # ---------- Theme, QSS & Language ----------
+    # ---------- Theme, Font, Shadows, QSS & Language ----------
+    def _apply_app_font(self):
+        if self.lang == "ar":
+            fams = ["Cairo", "Noto Sans Arabic", "Almarai", "Segoe UI", "Arial"]
+        else:
+            fams = ["Inter", "Segoe UI", "Arial"]
+        QApplication.setFont(QFont(fams[0], 10))
+
+    def _apply_shadows(self):
+        def shadow(widget, radius=12, opacity=0.22):
+            eff = QGraphicsDropShadowEffect(self)
+            eff.setBlurRadius(radius)
+            eff.setOffset(0, 2)
+            eff.setColor(QColor(0, 0, 0, int(255 * opacity)))
+            widget.setGraphicsEffect(eff)
+        for gb in self.page_dashboard.findChildren(QGroupBox):
+            shadow(gb, 16, 0.20)
+
     def _apply_qss(self):
         if self.is_dark:
             self.setStyleSheet("""
-            QTableView { gridline-color: #444; selection-background-color:#2563eb; selection-color:#fff; }
-            QHeaderView::section { background: #2b2b2b; color: #ffffff; padding: 6px; border: none; font-weight:600; }
-            QGroupBox::title { subcontrol-origin: margin; padding: 4px 6px; }
+            QWidget { font-size: 10pt; }
+            QTableView {
+              gridline-color: #444; selection-background-color:#2563eb; selection-color:#fff;
+              alternate-background-color: #2f3136;
+            }
+            QTableView::item:hover { background: #2a2f45; }
+            QHeaderView::section {
+              background: #2b2d31; color: #e5e7eb; padding: 8px;
+              border: 1px solid #3a3b40; font-weight:600;
+            }
+            QGroupBox {
+              border: 1px solid #3a3b40; border-radius: 10px; margin-top: 8px; background: #2b2d31;
+            }
+            QGroupBox::title { subcontrol-origin: margin; padding: 4px 8px; color: #cbd5e1; }
+            QPushButton {
+              border-radius: 8px; padding: 8px 12px; background: #3b3d42; color: #e5e7eb; border: 1px solid #4b4d52;
+            }
+            QPushButton:hover { background: #4a4c52; }
+            QPushButton[active="true"] {
+              background: #2563eb; color: #fff; border-color: #2563eb;
+            }
             """)
         else:
             self.setStyleSheet("""
-            QTableView { gridline-color: #c9d1d9; selection-background-color:#2563eb; selection-color:#fff; }
-            QHeaderView::section { background: #f2f4f7; color: #222; padding: 6px; border: 1px solid #e5e7eb; font-weight:600; }
-            QGroupBox::title { subcontrol-origin: margin; padding: 4px 6px; }
+            QWidget { font-size: 10pt; }
+            QTableView {
+              gridline-color: #c9d1d9; selection-background-color:#2563eb; selection-color:#fff;
+              alternate-background-color: #f6f7fb;
+            }
+            QTableView::item:hover { background: #eef2ff; }
+            QHeaderView::section {
+              background: #f6f7fb; color: #1f2937; padding: 8px;
+              border: 1px solid #e5e7eb; font-weight:600;
+            }
+            QGroupBox {
+              border: 1px solid #e5e7eb; border-radius: 10px; margin-top: 8px; background: #ffffff;
+            }
+            QGroupBox::title { subcontrol-origin: margin; padding: 4px 8px; color: #334155; }
+            QPushButton {
+              border-radius: 8px; padding: 8px 12px; background: #f3f4f6; color: #1f2937; border: 1px solid #e5e7eb;
+            }
+            QPushButton:hover { background: #eaeef7; }
+            QPushButton[active="true"] {
+              background: #2563eb; color: #fff; border-color: #2563eb;
+            }
             """)
+
+    def _set_active_nav(self, btn):
+        for b in [self.btn_dashboard, self.btn_add, self.btn_search, self.btn_analytics,
+                  self.btn_import, self.btn_export, self.btn_columns, self.btn_backup,
+                  self.btn_restore, self.btn_toggle_theme, self.btn_toggle_lang, self.btn_exit]:
+            b.setProperty("active", False)
+            b.style().unpolish(b); b.style().polish(b)
+        btn.setProperty("active", True)
+        btn.style().unpolish(btn); btn.style().polish(btn)
 
     def _apply_theme(self, dark=True):
         self.is_dark = dark
@@ -1662,6 +1797,7 @@ class MainWindow(QMainWindow):
         self.lang = "ar" if self.lang == "en" else "en"
         self.translator = Translator(self.lang)
         QApplication.setLayoutDirection(Qt.RightToLeft if self.lang == "ar" else Qt.LeftToRight)
+        self._apply_app_font()
         self._update_texts()
         self._set_tooltips()
         self.model.update_translator(self.translator)
@@ -1958,7 +2094,6 @@ def ensure_translations():
 def main():
     ensure_translations()
     app = QApplication(sys.argv)
-    # Login
     translator = Translator("en")
     login = LoginDialog(translator)
     if login.exec() != QDialog.Accepted:
